@@ -237,6 +237,12 @@ interface SettingsState {
   // explicit [] = "no folders". (Replaced the legacy global string[] | null.)
   allMailFolderIds: Record<string, string[]>;
 
+  // Per-account default sender identity, keyed by AccountEntry.id -> JMAP
+  // Identity id. Synced (and exported) so the chosen default survives clearing
+  // site data and follows the user across browsers/devices (issue #507). Kept
+  // per account because JMAP identity ids are account-scoped and would collide.
+  preferredIdentityIds: Record<string, string>;
+
   // Email Display
   disableThreading: boolean; // Show emails as individual messages instead of grouped by conversation
 
@@ -424,6 +430,7 @@ const DEFAULT_SETTINGS = {
   // All Mail view (gated)
   enableAllMailView: false,
   allMailFolderIds: {} as Record<string, string[]>,
+  preferredIdentityIds: {} as Record<string, string>,
 
   enableCrossUnreadView: false,
   enableCrossStarredView: false,
@@ -604,6 +611,7 @@ export const useSettingsStore = create<SettingsState>()(
           includeGroupInUnified: state.includeGroupInUnified,
           enableAllMailView: state.enableAllMailView,
           allMailFolderIds: state.allMailFolderIds,
+          preferredIdentityIds: state.preferredIdentityIds,
           enableCrossUnreadView: state.enableCrossUnreadView,
           enableCrossStarredView: state.enableCrossStarredView,
           enableCrossAllView: state.enableCrossAllView,
@@ -657,6 +665,11 @@ export const useSettingsStore = create<SettingsState>()(
               // Ignore a legacy global allMailFolderIds (string[] | null) or any
               // non-record value - this build keys it per account.
               if (key === 'allMailFolderIds' && !isPlainRecord(settings[key])) {
+                return;
+              }
+              // Per-account map (accountId -> identityId); ignore any legacy
+              // global/non-record value rather than corrupting the map.
+              if (key === 'preferredIdentityIds' && !isPlainRecord(settings[key])) {
                 return;
               }
               if (DEVICE_LOCAL_SETTING_KEYS.has(key)) {
@@ -849,7 +862,7 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: 'settings-storage',
-      version: 5,
+      version: 6,
       migrate: (persisted, version) => {
         const state = persisted as Record<string, unknown>;
         if (version < 2 && state.listDensity) {
@@ -877,6 +890,11 @@ export const useSettingsStore = create<SettingsState>()(
         if (version < 5 || !isPlainRecord(state.allMailFolderIds)) {
           state.allMailFolderIds = {};
         }
+        // v6: introduced the per-account default-identity map (issue #507).
+        // Coerce any missing/legacy value to an empty record.
+        if (version < 6 || !isPlainRecord(state.preferredIdentityIds)) {
+          state.preferredIdentityIds = {};
+        }
         return state as unknown as SettingsState;
       },
       onRehydrateStorage: () => {
@@ -887,6 +905,9 @@ export const useSettingsStore = create<SettingsState>()(
             // per-account consumers never see a non-record.
             if (!isPlainRecord(state.allMailFolderIds)) {
               state.allMailFolderIds = {};
+            }
+            if (!isPlainRecord(state.preferredIdentityIds)) {
+              state.preferredIdentityIds = {};
             }
             applyFontSize(state.fontSize);
             applyDensity(state.density);
