@@ -5,7 +5,7 @@ import DOMPurify from "dompurify";
 import { Email, ContactCard, Mailbox } from "@/lib/jmap/types";
 import { emailExportFilename, attachmentDownloadFilename, attachmentsBundleFilename, DEFAULT_EMAIL_TEMPLATE, DEFAULT_ATTACHMENT_TEMPLATE } from "@/lib/download-filename";
 import { EML_IMPORT_ACCEPT, expandImportableEmails } from "@/lib/eml-import";
-import { EMAIL_IFRAME_SANITIZE_CONFIG, blockExternalResourcesOnNode, collapseBlockedImageContainers, escapeHtml, plainTextToSafeHtml, sanitizeEmailHtml, sanitizePlainTextRenderedHtml } from "@/lib/email-sanitization";
+import { EMAIL_IFRAME_SANITIZE_CONFIG, applyNewTabToAnchor, blockExternalResourcesOnNode, collapseBlockedImageContainers, escapeHtml, plainTextToSafeHtml, sanitizeEmailHtml, sanitizePlainTextRenderedHtml } from "@/lib/email-sanitization";
 import { hasMeaningfulHtmlBody } from "@/lib/signature-utils";
 import { withBasePath } from "@/lib/browser-navigation";
 import { Button } from "@/components/ui/button";
@@ -2407,10 +2407,10 @@ export function EmailViewer({
             }
           }
 
-          if (node.tagName === 'A') {
-            node.setAttribute('target', '_blank');
-            node.setAttribute('rel', 'noopener noreferrer');
-          }
+          // Open external web links (http/https) in a new tab. mailto:, tel:,
+          // in-page #anchors and other schemes keep their default behaviour so
+          // they hand off to the mail client / navigate in place.
+          applyNewTabToAnchor(node);
 
           // No dark mode color transforms - emails render true-to-life in iframe
         });
@@ -2966,11 +2966,10 @@ export function EmailViewer({
         lastBodyHeightRef.current = initialHeight;
         setIframeReady(true);
 
-        // Make links open in new tab
-        doc.querySelectorAll('a').forEach(a => {
-          a.setAttribute('target', '_blank');
-          a.setAttribute('rel', 'noopener noreferrer');
-        });
+        // Make external web links (http/https) open in a new tab. mailto:,
+        // tel: and in-page #anchors are left untouched so they hand off to the
+        // mail client / navigate in place instead of spawning a blank tab.
+        doc.querySelectorAll('a').forEach(applyNewTabToAnchor);
 
         // Plugin intercept: let plugins cancel or rewrite external links inside
         // the email body before navigation happens. Bound on the iframe doc so

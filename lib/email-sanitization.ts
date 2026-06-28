@@ -119,7 +119,27 @@ const I18N_SANITIZE_CONFIG = {
 };
 
 export function sanitizeI18nHtml(html: string): string {
-  return DOMPurify.sanitize(html, I18N_SANITIZE_CONFIG);
+  // Same DOMPurify quirk as sanitizePlainTextRenderedHtml: a custom
+  // ALLOWED_URI_REGEXP makes it strip `target`/`rel`, so a translated link
+  // authored with target="_blank" (e.g. the docs link in
+  // settings.security.not_available) would otherwise open in the same tab.
+  // Keep the author's target/rel, and harden any new-tab link with
+  // rel="noopener noreferrer" even when the catalog omits it (tab-nabbing).
+  DOMPurify.addHook('uponSanitizeAttribute', (_node, data) => {
+    if (data.attrName === 'target' || data.attrName === 'rel') {
+      data.forceKeepAttr = true;
+    }
+  });
+  DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+    if (node.tagName === 'A' && node.getAttribute('target') === '_blank') {
+      node.setAttribute('rel', 'noopener noreferrer');
+    }
+  });
+  try {
+    return DOMPurify.sanitize(html, I18N_SANITIZE_CONFIG);
+  } finally {
+    DOMPurify.removeAllHooks();
+  }
 }
 
 /**
@@ -137,7 +157,18 @@ const PLAIN_TEXT_RENDERED_CONFIG = {
 };
 
 export function sanitizePlainTextRenderedHtml(html: string): string {
-  return DOMPurify.sanitize(html, PLAIN_TEXT_RENDERED_CONFIG);
+  // DOMPurify drops `target`/`rel` from <a> when a custom ALLOWED_URI_REGEXP is
+  // set (it validates them against the regexp, which `_blank` never matches), so
+  // even though `plainTextToSafeHtml` emits them they would be stripped here and
+  // the link would open in the same tab. Re-apply them after sanitization via a
+  // hook, scoped to external web links (http/https). mailto:/tel:/#anchors keep
+  // their default in-place behaviour.
+  DOMPurify.addHook('afterSanitizeAttributes', applyNewTabToAnchor);
+  try {
+    return DOMPurify.sanitize(html, PLAIN_TEXT_RENDERED_CONFIG);
+  } finally {
+    DOMPurify.removeAllHooks();
+  }
 }
 
 /**
@@ -166,6 +197,45 @@ export function isExternalResourceUrl(value: string | null | undefined): boolean
   return /^(?:https?:\/\/|\/\/)/i.test(normalized);
 }
 
+
+/**
+ * True if an anchor href points at an external web page (http/https, including
+ * protocol-relative `//host`) that should open in a new browser tab with
+ * `target="_blank" rel="noopener noreferrer"`. `mailto:`, `tel:`, `sms:`,
+ * `cid:`, in-page `#fragments` and any other scheme are excluded - those should
+ * navigate in place or hand off to the OS / mail-client handler rather than
+ * spawn a blank tab.
+ *
+ * Uses the same leading-trim + C0-control stripping as isExternalResourceUrl so
+ * obfuscated schemes (`"h\ttps://x"`, `"\n//host"`) are still recognised.
+ */
+export function isHttpLinkHref(href: string | null | undefined): boolean {
+  if (!href) return false;
+  // eslint-disable-next-line no-control-regex
+  const normalized = href.replace(/[\u0000-\u0020]+/g, '');
+  return /^(?:https?:\/\/|\/\/)/i.test(normalized);
+}
+
+/**
+ * Apply the "open in a new tab" treatment to a single anchor element so every
+ * email render path behaves identically: external web links (http/https) get
+ * `target="_blank" rel="noopener noreferrer"`; `mailto:`, `tel:`, in-page
+ * `#anchors` and other schemes have any `target`/`rel` removed so they navigate
+ * in place / hand off to the mail client instead of spawning a blank tab.
+ *
+ * Shared by the iframe DOMPurify hook, the iframe post-render DOM walk and the
+ * plaintext sanitizer (see email-viewer + sanitizePlainTextRenderedHtml).
+ */
+export function applyNewTabToAnchor(node: Element): void {
+  if (node.tagName !== 'A') return;
+  if (isHttpLinkHref(node.getAttribute('href'))) {
+    node.setAttribute('target', '_blank');
+    node.setAttribute('rel', 'noopener noreferrer');
+  } else {
+    node.removeAttribute('target');
+    node.removeAttribute('rel');
+  }
+}
 
 /**
  * Decode CSS escape sequences so escaped tracking URLs can be recognised.
